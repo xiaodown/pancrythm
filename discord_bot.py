@@ -1,11 +1,13 @@
 import asyncio
 import discord
-import logging
 import settings
+import yt_dlp
+import json
 
 api_key = settings.load_discord_api_key()
 intents = discord.Intents.default()
 intents.messages = True  # Enable message intents
+intents.message_content = True  # Enable message content intents
 intents.guilds = True  # Enable guild-related intents
 intents.voice_states = True  # Enable voice state intents
 bot = discord.Client(intents=intents)
@@ -64,42 +66,124 @@ def add_idle_time(guild_id, additional_time):
     else:
         print(f"No active idle timer for guild {guild_id} to add time to.")
 
+def search_youtube(query):
+    """
+    Searches YouTube for the given query and returns the first result.
+    """
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'noplaylist': True,
+        'default_search': 'auto',
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(query, download=False)
+            return info
+        except Exception as e:
+            print(f"Error searching YouTube: {e}")
+            return None
+
+def play_command(voice_client, query):
+    """
+    Plays the audio from the given query in the voice channel.
+    """
+    info = search_youtube(query)
+    if info is None:
+        print("No information returned from YouTube search.")
+        return
+
+    # Save the entire info dictionary to a file and pretty-print it
+    with open("tempfile.json", "w") as f:
+        json.dump(info, f, indent=4)
+    print("YouTube info saved to tempfile.json")
+
+    # Navigate to the correct entry and formats
+    if 'entries' not in info or not info['entries']:
+        print("Error: 'entries' key not found or empty in the info dictionary.")
+        return
+
+    formats = info['entries'][0].get('formats', [])
+    if not formats:
+        print("Error: 'formats' key not found or empty in the first entry.")
+        return
+
+    # Find the format with format_id == 234
+    url = None
+    for fmt in formats:
+        if fmt.get('format_id') == '234':  # Match format_id as a string
+            url = fmt.get('url')
+            break
+
+    if not url:
+        print("Error: No format with format_id == 234 found.")
+        return
+
+    # Extract the duration
+    duration = info['entries'][0].get('duration', None)
+    if duration is None:
+        print("Warning: 'duration' key not found in the first entry. Defaulting to 0 seconds.")
+        duration = 0
+
+    # Add the song's duration to the idle timer
+    add_idle_time(voice_client.guild.id, duration)
+    print(f"Added {duration} seconds to the idle timer for guild {voice_client.guild.id}.")
+
+    # Play the audio
+    voice_client.play(discord.FFmpegPCMAudio(url), after=lambda e: print(f"Finished playing: {e}"))
+
+    # Start the idle timer
+    asyncio.create_task(start_idle_timer(voice_client))
+
+def parse_message(message):
+    """
+    Parses the message to extract the command, verb, and arguments.
+    Example: "!cake play <string>" -> command="cake", verb="play", args="<string>"
+    """
+    if not message.content.startswith("!"):
+        return None, None, None  # Not a command
+
+    parts = message.content[1:].split(" ", 2)  # Split into at most 3 parts: command, verb, and args
+    if len(parts) < 2:
+        return None, None, None  # Not enough parts to extract command and verb
+
+    command = parts[0]  # The command (e.g., "cake")
+    verb = parts[1]  # The verb (e.g., "play")
+    args = parts[2] if len(parts) > 2 else None  # The remaining string (e.g., "<string>")
+
+    return command, verb, args
+
 
 @bot.event
 async def on_message(message):
+    print(f"Received message: {message.content}")
     # Ignore messages from the bot itself
     if message.author == bot.user:
         return
 
-    # Check if the message starts with "!" followed by the wake phrase
-    if message.content.startswith(f"!{settings.wake_phrase}"):
-        # Get the user who sent the message
-        user = message.author
+    # Parse the message
+    command, verb, args = parse_message(message)
 
-        # Check if the user is in a voice channel
-        if user.voice and user.voice.channel:
-            voice_channel = user.voice.channel
+    # Check if the command matches the wake phrase
+    if command == settings.wake_phrase:
+        if verb == "play" and args:
+            voice_channel = message.author.voice.channel if message.author.voice else None
+            if voice_channel is None:
+                await message.channel.send("You need to be in a voice channel to use this command.")
+                return
 
-            # Join the voice channel
-            try:
+            # Check if the bot is already connected to a voice channel in the same guild
+            existing_voice_client = discord.utils.get(bot.voice_clients, guild=message.guild)
+            if existing_voice_client and existing_voice_client.is_connected():
+                # Bot is already connected to a voice channel in this guild
+                print(f"Bot is already connected to a voice channel in guild {message.guild.id}.")
+            else:
+                # Connect to the voice channel
                 voice_client = await voice_channel.connect()
-                await message.channel.send(
-                    f"{user.name}, I have joined the voice channel: {voice_channel.name}"
-                )
-
-                # Start the idle timer with the configurable timeout
-                await start_idle_timer(voice_client)
-
-            except discord.ClientException:
-                await message.channel.send(
-                    f"I'm already connected to a voice channel!"
-                )
-            except Exception as e:
-                await message.channel.send(
-                    f"Failed to join the voice channel: {e}"
-                )
+            await message.channel.send(f"Playing: {args}")
+            play_command(voice_client, args)
         else:
-            await message.channel.send(f"{user.name} is not in a voice channel.")
-
+            await message.channel.send(f"Unknown verb or missing arguments for command: {verb}")
 
 bot.run(api_key)
