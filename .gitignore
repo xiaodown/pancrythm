@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+
+# private stuff
+discordapikey.txt
+
 # C extensions
 *.so
 
