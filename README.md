@@ -70,19 +70,27 @@ You can set the wake word in `settings.py` but by default it is `cake`.  So:
  * !cake play `<search term>`
    * searches for `<search term>` and plays the first result
    * also accepts a YT url as the search term, which skips searching and plays directly
+   * if a song is already playing, it will add the new one to the queue
  * !cake stop
    * immediately stops playback and disconnects the bot from the voice channel
  * !cake pause
    * pauses audio (note the bot will still idle timeout)
  * !cake resume
    * resume playback
+ * !cake queue
+   * shows songs currently in the queue
+ * !cake skip
+   * skips the current song and goes to the next one in the queue
+ * !cake remove <number>
+   * removes song <number> from the queue
  * !cake help
    * displays currently supported commands and help text
 
 ## TODO:
 
- * Queueing system needs to be implemented
-   * Skipping / manipulating items in the queueing system
+ * ~~Queueing system needs to be implemented~~ - Done, if not particularly elegant.  Should be race-condition safe(ish)
+   * ~~Skipping / manipulating items in the queueing system~~ Done.
+ * Make the idle timeout less crazy (it's been rewritten like 6 times so there's bits everywhere)
  * ~~Create help text (!cake help or something)~~ Done
  * ~~support URLs as a search term~~ Done
  * Clean up code / make more object oriented (unlikely)

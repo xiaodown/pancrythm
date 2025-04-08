@@ -7,21 +7,31 @@ from datetime import datetime, timedelta
 import re
 from mutagen import File as MutagenFile
 
-api_key = settings.load_discord_api_key()
+# Discord bot setup and instantiation
 intents = discord.Intents.default()
-intents.messages = True  # Enable message intents
-intents.message_content = True  # Enable message content intents
-intents.guilds = True  # Enable guild-related intents
-intents.voice_states = True  # Enable voice state intents
+intents.messages = True
+intents.message_content = True
+intents.guilds = True
+intents.voice_states = True
 bot = discord.Client(intents=intents)
+
+# Load our settings
 bot_name = settings.bot_name
-
-# Dictionary to track idle timers for each voice connection
-_idle_timers = {}
-_idle_timer_remaining = {}  # Tracks remaining time for each guild
-
 cache_dir = settings.cache_dir
+api_key = settings.load_discord_api_key()
+queue_limit = settings.queue_limit
 
+# Global lock for managing guild locks
+_global_lock = asyncio.Lock()
+
+# Dicts to track idle timers
+_idle_timers = {}
+_idle_timer_remaining = {}
+_idle_timer_locks = {}
+
+# Dicts to handle queues and related things
+_guild_queues = {}
+_guild_locks = {}
 
 def ensure_cache_dir_exists():
     """
@@ -49,13 +59,17 @@ async def start_idle_timer(voice_client, timeout=None):
     if timeout is None:
         timeout = settings.idle_timeout
 
+    # Ensure a lock exists for this guild's idle timer
+    if guild_id not in _idle_timer_locks:
+        _idle_timer_locks[guild_id] = asyncio.Lock()
+
     # Cancel any existing timer for this guild
     if guild_id in _idle_timers:
         _idle_timers[guild_id].cancel()
 
-    # Set the remaining time
-    _idle_timer_remaining[guild_id] = timeout
-    print(f"Initialized idle timer for guild {guild_name} with timeout {timeout} seconds.")
+    async with _idle_timer_locks[guild_id]:
+        _idle_timer_remaining[guild_id] = timeout
+        print(f"Initialized idle timer for guild {guild_name} with timeout {timeout} seconds.")
 
     async def leave_after_timeout():
         while _idle_timer_remaining[guild_id] > 0:
@@ -63,15 +77,20 @@ async def start_idle_timer(voice_client, timeout=None):
             _idle_timer_remaining[guild_id] -= 1
 
             # Check every 60 seconds if the bot is alone in the voice channel
-            if _idle_timer_remaining[guild_id] % 60 == 0:
+            if _idle_timer_remaining[guild_id] % 60 == 0:  # Grace period check
                 channel_members = voice_client.channel.members
                 non_bot_members = [member for member in channel_members if not member.bot]
-                if not non_bot_members:  # If no non-bot members are in the channel
-                    print(f"No users left in the voice channel {voice_client.channel.name}. Disconnecting.")
-                    await voice_client.disconnect()
-                    del _idle_timers[guild_id]
-                    del _idle_timer_remaining[guild_id]
-                    return
+                if not non_bot_members:
+                    print(f"No users left in the voice channel {voice_client.channel.name}. Waiting for grace period.")
+                    await asyncio.sleep(60)
+                    channel_members = voice_client.channel.members
+                    non_bot_members = [member for member in channel_members if not member.bot]
+                    if not non_bot_members:
+                        print(f"No users returned to the voice channel {voice_client.channel.name}. Disconnecting.")
+                        await voice_client.disconnect()
+                        del _idle_timers[guild_id]
+                        del _idle_timer_remaining[guild_id]
+                        return
 
         # Disconnect after the idle timer expires
         if voice_client.is_connected():
@@ -80,17 +99,18 @@ async def start_idle_timer(voice_client, timeout=None):
             del _idle_timers[guild_id]
             del _idle_timer_remaining[guild_id]
 
-    # Start a new timer
-    _idle_timers[guild_id] = asyncio.create_task(leave_after_timeout())
+    async with _idle_timer_locks[guild_id]:
+        _idle_timers[guild_id] = asyncio.create_task(leave_after_timeout())
 
 
-def add_idle_time(guild, additional_time):
+async def add_idle_time(guild, additional_time):
     """
     Adds additional time to the idle timer for the specified guild.
     """
     if guild.id in _idle_timer_remaining:
-        _idle_timer_remaining[guild.id] += additional_time
-        print(f"Added {additional_time} seconds to the idle timer for guild {guild.name}. New remaining time: {_idle_timer_remaining[guild.id]} seconds.")
+        async with _idle_timer_locks[guild.id]:
+            _idle_timer_remaining[guild.id] += additional_time
+            print(f"Added {additional_time} seconds to the idle timer for guild {guild.name}. New remaining time: {_idle_timer_remaining[guild.id]} seconds.")
     else:
         print(f"No active idle timer for guild {guild.name} to add time to.")
 
@@ -200,11 +220,22 @@ def stop_playback(voice_client):
 async def handle_stop_command(voice_client, channel):
     """
     Stops the audio playback and disconnects from the voice channel.
+    Clears the queue for the guild and removes the lock.
     """
+    guild_id = voice_client.guild.id
+
+    # Clear the queue
+    if guild_id in _guild_queues:
+        _guild_queues[guild_id].clear()
+
+    # Remove the lock for this guild
+    if guild_id in _guild_locks:
+        del _guild_locks[guild_id]
+
     stop_playback(voice_client)
     await voice_client.disconnect()
-    await channel.send("Stopped audio playback and disconnected from the voice channel.")
-    print("Disconnected from voice channel.")
+    await channel.send("Stopped audio playback, cleared the queue.")
+    print("Disconnected from voice channel and cleared the queue.")
 
 async def handle_pause_command(voice_client, channel):
     """
@@ -246,89 +277,146 @@ def get_title_from_url(url):
             print(f"Error extracting title from URL: {e}")
             return None
 
-async def handle_play_command(voice_client, query, message_channel):
+async def play_song(voice_client, message_channel, song):
     """
-    Plays the audio from the given query or URL in the voice channel.
+    Plays a song and handles the queue.
     """
-    # Check if the query is a YouTube URL
-    youtube_url_pattern = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
-    is_url = re.match(youtube_url_pattern, query)
-
-    if is_url:
-        url = query.split("&")[0]
-        print(f"Detected YouTube URL: {url}")
-        title = get_title_from_url(url)
-    else:
-        # Perform a YouTube search if it's not a URL
-        info = search_youtube(query)
-        if info is None:
-            print("No information returned from YouTube search.")
-            await message_channel.send("No results found for your query.")
-            return
-
-        # Navigate to the correct entry and formats
-        if 'entries' not in info or not info['entries']:
-            print("Error: 'entries' key not found or empty in the info dictionary.")
-            await message_channel.send("No results found for your query.")
-            return
-
-        formats = info['entries'][0].get('formats', [])
-        if not formats:
-            print("Error: 'formats' key not found or empty in the first entry.")
-            await message_channel.send("No playable formats found for your query.")
-            return
-
-        # Find the format with format_id == 234
-        url = None
-        for fmt in formats:
-            if fmt.get('format_id') == '234':  # Match format_id as a string
-                url = fmt.get('url')
-                break
-        title = info['entries'][0].get('title', "Unknown Title")
-        print(f"Title: {title}")
-
-        if not url:
-            print("Error: No format with format_id == 234 found.")
-            await message_channel.send("No playable formats found for your query.")
-            return
-
-    # Download the audio file to the cache directory
-    filepath = await download_audio(url, cache_dir, title)
-    if not filepath:
-        await message_channel.send("Failed to download audio.")
-        return
-    
-    if is_url:
-        duration = get_audio_duration(filepath)
-    else:
-        duration = info['entries'][0].get('duration', 0)
-        if duration == 0:
-            print("Warning: 'duration' key not found or is 0 in the first entry.")
-    
-
-    # Check if the bot is already playing audio
-    if voice_client.is_playing():
-        print("Bot is already playing audio.")
-        await message_channel.send(f"Currently playing audio. Queuing your request: {title}")
-        # Optionally, you can implement a queue system here to handle multiple requests
-        return
-
     # Start the idle timer
     await start_idle_timer(voice_client)  # Ensure the timer is initialized first
 
     # Add the song's duration to the idle timer
-    add_idle_time(voice_client.guild, duration)
+    add_idle_time(voice_client.guild, song["duration"])
 
     # Send a message to the text channel before playing
-    await message_channel.send(f"Now playing: {title}")
+    await message_channel.send(f"Now playing: {song['title']}")
 
     # Play the audio with volume control from the cached file
     volume = settings.volume
     ffmpeg_options = {
         'options': f'-filter:a "volume={volume}"'
     }
-    voice_client.play(discord.FFmpegPCMAudio(filepath, **ffmpeg_options), after=lambda e: print(f"Finished playing: {e}"))
 
+    audio_source = discord.FFmpegPCMAudio(
+        song["filepath"],
+        **ffmpeg_options
+    )
+
+    voice_client.play(
+        audio_source,
+        after=lambda e: asyncio.run_coroutine_threadsafe(
+            handle_song_end(voice_client, message_channel),
+            bot.loop
+        )
+    )
+
+async def handle_song_end(voice_client, message_channel):
+    """
+    Handles the end of a song and plays the next song in the queue if available.
+    Resets the idle timer back to the default timeout only if the queue is empty.
+    """
+    guild_id = voice_client.guild.id
+    guild_name = voice_client.guild.name
+
+    async with _guild_locks[guild_id]:
+        if guild_id in _guild_queues and _guild_queues[guild_id]:
+            # Play the next song in the queue
+            next_song = _guild_queues[guild_id].pop(0)
+            try:
+                await play_song(voice_client, message_channel, next_song)
+            except Exception as e:
+                print(f"Error playing next song: {e}")
+        else:
+            print(f"Queue is empty for guild {guild_name}. Resetting idle timer to default timeout.")
+            await start_idle_timer(voice_client, timeout=settings.idle_timeout)
+
+async def handle_play_command(voice_client, query, message_channel):
+    """
+    Plays the audio from the given query or URL in the voice channel.
+    If a song is already playing, adds the song to the queue.
+    """
+    guild_id = voice_client.guild.id
+
+    async with _global_lock:
+        if guild_id not in _guild_locks:
+            _guild_locks[guild_id] = asyncio.Lock()
+        async with _guild_locks[guild_id]:
+            # Check if the query is a YouTube URL
+            youtube_url_pattern = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
+            is_url = re.match(youtube_url_pattern, query)
+
+            if is_url:
+                url = query.split("&")[0]
+                print(f"Detected YouTube URL: {url}")
+                title = get_title_from_url(url)
+            else:
+                # Perform a YouTube search if it's not a URL
+                info = search_youtube(query)
+                if info is None:
+                    print("No information returned from YouTube search.")
+                    await message_channel.send("No results found for your query.")
+                    return
+
+                # Navigate to the correct entry and formats
+                if 'entries' not in info or not info['entries']:
+                    print("Error: 'entries' key not found or empty in the info dictionary.")
+                    await message_channel.send("No results found for your query.")
+                    return
+
+                formats = info['entries'][0].get('formats', [])
+                if not formats:
+                    print("Error: 'formats' key not found or empty in the first entry.")
+                    await message_channel.send("No playable formats found for your query.")
+                    return
+
+                # Find the format with format_id == 234
+                url = None
+                for fmt in formats:
+                    if fmt.get('format_id') == '234':  # Match format_id as a string
+                        url = fmt.get('url')
+                        break
+                title = info['entries'][0].get('title', "Unknown Title")
+                print(f"Title: {title}")
+
+                if not url:
+                    print("Error: No format with format_id == 234 found.")
+                    await message_channel.send("No playable formats found for your query.")
+                    return
+
+            # Download the audio file to the cache directory
+            filepath = await download_audio(url, cache_dir, title)
+            if not filepath:
+                await message_channel.send("Failed to download audio.")
+                return
+
+            # Extract duration
+            if is_url:
+                duration = get_audio_duration(filepath)
+            else:
+                duration = info['entries'][0].get('duration', 600)
+
+            # Initialize the queue for the guild if it doesn't exist
+            if guild_id not in _guild_queues:
+                _guild_queues[guild_id] = []
+
+            # Check if the bot is already playing audio
+            if voice_client.is_playing():
+                # Add the song to the queue
+                if len(_guild_queues[guild_id]) >= queue_limit:
+                    await message_channel.send("The queue is full. Please wait for some songs to finish before adding more.")
+                    return
+                _guild_queues[guild_id].append({"title": title, "url": url, "filepath": filepath, "duration": duration})
+                print(f"Added to queue: {title}")
+                await message_channel.send(f"Added to queue: {title}")
+                return
+
+            # Play the song immediately if no audio is playing
+            song = {
+                "title": title, 
+                "url": url, 
+                "filepath": filepath, 
+                "duration": duration
+                }
+            await play_song(voice_client, message_channel, song)
 
 def parse_message(message):
     """
@@ -373,7 +461,6 @@ async def on_message(message):
             existing_voice_client = discord.utils.get(bot.voice_clients, guild=message.guild)
             if existing_voice_client and existing_voice_client.is_connected():
                 print(f"Bot is already connected to a voice channel in guild {message.guild.id}.")
-                await channel.send(f"Already connected to a voice channel. Processing your command: {args}")
                 await handle_play_command(existing_voice_client, args, message.channel)
             else:
                 # Connect to the voice channel
@@ -413,10 +500,56 @@ async def on_message(message):
                 f"!{settings.wake_phrase} stop - Stop audio playback and disconnect.\n"
                 f"!{settings.wake_phrase} pause - Pause audio playback.\n"
                 f"!{settings.wake_phrase} resume - Resume audio playback.\n"
+                f"!{settings.wake_phrase} skip - Skip the current song.\n"
+                f"!{settings.wake_phrase} queue - Show the current queue.\n"
+                f"!{settings.wake_phrase} remove <song number> - Remove a song from the queue.\n"
                 f"!{settings.wake_phrase} help - Show this help message."
                 "```"
             )
             await channel.send(help_message)
+        
+        # QUEUE
+        elif verb == "queue":
+            voice_client = discord.utils.get(bot.voice_clients, guild=message.guild)
+            if voice_client:
+                queue = _guild_queues.get(voice_client.guild.id, [])
+                if queue:
+                    queue_list = "\n".join([f"{i+1}. {song['title']}" for i, song in enumerate(queue)])
+                    await channel.send(f"Current queue:\n{queue_list}")
+                else:
+                    await channel.send("The queue is empty.")
+            else:
+                await channel.send(f"{bot_name} is not connected to a voice channel.")
+
+        # SKIP
+        elif verb == "skip":
+            voice_client = discord.utils.get(bot.voice_clients, guild=message.guild)
+            if voice_client:
+                # Stopping playback will implicitly call the after callback
+                stop_playback(voice_client)
+            else:
+                await channel.send(f"{bot_name} is not connected to a voice channel.")
+
+        # REMOVE
+        elif verb == "remove":
+            if args:
+                number_str = args.split()[0]
+                if number_str.isdigit():
+                    index = int(number_str) - 1
+                    voice_client = discord.utils.get(bot.voice_clients, guild=message.guild)
+                    if voice_client:
+                        queue = _guild_queues.get(voice_client.guild.id, [])
+                        if 0 <= index < len(queue):
+                            removed_song = queue.pop(index)
+                            await channel.send(f"Removed {removed_song['title']} from the queue.")
+                        else:
+                            await channel.send("Invalid song number.")
+                    else:
+                        await channel.send(f"{bot_name} is not connected to a voice channel.")
+                else:
+                    await channel.send("Please provide a valid song number to remove.")
+            else:
+                await channel.send("Please provide a valid song number to remove.")
 
         else:
             await channel.send(f"Unknown command {verb}")
