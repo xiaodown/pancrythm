@@ -75,6 +75,8 @@ You can set the wake word in `settings.py` but by default it is `cake`.  So:
    * pauses audio (note the bot will still idle timeout)
  * !cake resume
    * resume playback
+ * !cake help
+   * displays currently supported commands and help text
 
 ## TODO:
 
