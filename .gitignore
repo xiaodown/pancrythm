@@ -9,6 +9,7 @@ discordapikey.txt
 ytapikey.txt
 cache/
 
+
 # C extensions
 *.so
 
