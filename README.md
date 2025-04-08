@@ -16,6 +16,7 @@ Works in linux.  To set it up:
  * Clone the git repo: `git clone git@github.com:xiaodown/pancrythm.git`
  * Create a python virtual environment.
    * I use uv for this now: `cd pancrythm; uv venv`
+   * You can do this with poetry or raw-dog with pip if you're a neanderthal, details left as an exercise for the reader.
  * Install the required libraries: `source .venv/bin/activate; uv pip install -r requirements.txt`
  * Create a discord bot:
    * This is covered elsewhere on the internet, but basically:
