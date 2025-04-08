@@ -86,6 +86,7 @@ You can set the wake word in `settings.py` but by default it is `cake`.  So:
  * ~~Create help text (!cake help or something)~~ Done
  * ~~support URLs as a search term~~ Done
  * Clean up code / make more object oriented (unlikely)
+   * This is really ugly; it started as a simple script and kept growing.  Oh well.  Refactoring is for chumps.
 
 ## Risks:
 
