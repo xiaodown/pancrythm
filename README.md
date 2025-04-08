@@ -79,9 +79,9 @@ You can set the wake word in `settings.py` but by default it is `cake`.  So:
 
  * Queueing system needs to be implemented
    * Skipping / manipulating items in the queueing system
- * Create help text (!cake help or something)
- * support URLs as a search term
- * Clean up code (unlikely)
+ * ~~Create help text (!cake help or something)~~ Done
+ * ~~support URLs as a search term~~ Done
+ * Clean up code / make more object oriented (unlikely)
 
 ## Risks:
 
