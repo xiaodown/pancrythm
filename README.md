@@ -16,9 +16,9 @@ Works in linux.  To set it up:
  * Clone the git repo: `git clone git@github.com:xiaodown/pancrythm.git`
  * Create a python virtual environment.
    * I use uv for this now: `cd pancrythm; uv venv`
- * Install the required libraries: `uv pip install -r requirements.txt`
+ * Install the required libraries: `source .venv/bin/activate; uv pip install -r requirements.txt`
  * Create a discord bot:
-   * This is covered elsewhere, but basically:
+   * This is covered elsewhere on the internet, but basically:
      * Go to the [Discord Developer Portal](https://discord.com/developers/applications) and register a new application
      * Save your API key somewhere safe!
      * App settings -> Installation -> set Install Link to None
@@ -87,4 +87,4 @@ If youtube changes the way their API works, we're at the mercy of yt_dlp.  It ma
 and I briefly looked into creating a google API key and using the Youtube Info V3 API, so there's a fallback plan, but...
 
 Also if someone takes this and turns it into a huge commercial thing on hundreds of servers, rights-holders are going to be mad.
-That's not what this bot is for; it's for small use among groups of close friends.
+That's not what this bot is for; it's for small use among groups of close friends. Don't be a jerk.
