@@ -2,9 +2,10 @@ import asyncio
 import discord
 import settings
 import yt_dlp
-import json
 import os
 from datetime import datetime, timedelta
+import re
+from mutagen import File as MutagenFile
 
 api_key = settings.load_discord_api_key()
 intents = discord.Intents.default()
@@ -119,6 +120,7 @@ async def clean_cache():
     now = datetime.now()
     seven_days_ago = now - timedelta(days=7)
 
+    # Remove files older than 7 days
     for filename in os.listdir(cache_dir):
         file_path = os.path.join(cache_dir, filename)
         if os.path.isfile(file_path):
@@ -135,7 +137,7 @@ async def download_audio(url, cache_dir, title):
     Downloads the audio file using yt-dlp and saves it in the cache directory.
     Updates the file's modification time to the current time after downloading.
     """
-    filename = "".join(c for c in title if c.isalnum() or c in (" ", "-", "_")).rstrip() + ".mp3"
+    filename = "".join(c for c in title if c.isalnum() or c in (" ", "-", "_")).rstrip() + ".WebM"
     filepath = os.path.join(cache_dir, filename)
 
     # Clean the cache directory before downloading (probably aggressive but w/e)
@@ -167,15 +169,33 @@ async def download_audio(url, cache_dir, title):
             print(f"Failed to download audio with yt-dlp: {e}")
             return None
 
+def get_audio_duration(filepath):
+    """
+    Attempts to extract the duration of a file using mutagen.
+    Falls back to a default duration if unable to extract.
+    Returns the duration in seconds as an integer.
+    """
+    try:
+        # Use mutagen to extract the duration
+        audio = MutagenFile(filepath)
+        if audio and audio.info and audio.info.length:
+            print(f"Extracted duration for file {filepath}: {audio.info.length} seconds")
+            return int(audio.info.length)
+        else:
+            print(f"Mutagen could not extract duration for file: {filepath}")
+    except Exception as e:
+        print(f"Error using mutagen to extract duration for file {filepath}: {e}")
+
+    # Fallback to default duration
+    print(f"Unable to determine duration for file: {filepath}. Using safe duration.")
+    return 600  # Default to 10 minutes if duration cannot be determined
+
 def stop_playback(voice_client):
     """
     Stops the audio playback in the voice client.
     """
     if voice_client.is_playing():
         voice_client.stop()
-        print("Stopped audio playback.")
-    else:
-        print("No audio is currently playing.")
 
 async def handle_stop_command(voice_client, channel):
     """
@@ -208,48 +228,83 @@ async def handle_resume_command(voice_client, channel):
         await channel.send("Audio is not paused.")
         print("Audio is not paused.")
 
+def get_title_from_url(url):
+    """
+    Extracts the title of a YouTube video given its URL using yt_dlp.
+    """
+    ydl_opts = {
+        'quiet': True,
+        'format': 'bestaudio/best',
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+            print(f"Got title from URL: {info.get('title', 'Unknown Title')}")
+            return info.get('title', 'Unknown Title')
+        except Exception as e:
+            print(f"Error extracting title from URL: {e}")
+            return None
+
 async def handle_play_command(voice_client, query, message_channel):
     """
-    Plays the audio from the given query in the voice channel.
+    Plays the audio from the given query or URL in the voice channel.
     """
-    info = search_youtube(query)
-    if info is None:
-        print("No information returned from YouTube search.")
-        return
+    # Check if the query is a YouTube URL
+    youtube_url_pattern = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
+    is_url = re.match(youtube_url_pattern, query)
 
-    # Navigate to the correct entry and formats
-    if 'entries' not in info or not info['entries']:
-        print("Error: 'entries' key not found or empty in the info dictionary.")
-        return
+    if is_url:
+        url = query.split("&")[0]
+        print(f"Detected YouTube URL: {url}")
+        title = get_title_from_url(url)
+    else:
+        # Perform a YouTube search if it's not a URL
+        info = search_youtube(query)
+        if info is None:
+            print("No information returned from YouTube search.")
+            await message_channel.send("No results found for your query.")
+            return
 
-    formats = info['entries'][0].get('formats', [])
-    if not formats:
-        print("Error: 'formats' key not found or empty in the first entry.")
-        return
+        # Navigate to the correct entry and formats
+        if 'entries' not in info or not info['entries']:
+            print("Error: 'entries' key not found or empty in the info dictionary.")
+            await message_channel.send("No results found for your query.")
+            return
 
-    # Find the format with format_id == 234
-    url = None
-    for fmt in formats:
-        if fmt.get('format_id') == '234':  # Match format_id as a string
-            url = fmt.get('url')
-            break
-    title = info['entries'][0].get('title', "Unknown Title")
-    print(f"Title: {title}")
+        formats = info['entries'][0].get('formats', [])
+        if not formats:
+            print("Error: 'formats' key not found or empty in the first entry.")
+            await message_channel.send("No playable formats found for your query.")
+            return
 
-    if not url:
-        print("Error: No format with format_id == 234 found.")
-        return
+        # Find the format with format_id == 234
+        url = None
+        for fmt in formats:
+            if fmt.get('format_id') == '234':  # Match format_id as a string
+                url = fmt.get('url')
+                break
+        title = info['entries'][0].get('title', "Unknown Title")
+        print(f"Title: {title}")
 
-    # Extract the duration
-    duration = info['entries'][0].get('duration', 0)
-    if duration == 0:
-        print("Warning: 'duration' key not found or is 0 in the first entry.")
+        if not url:
+            print("Error: No format with format_id == 234 found.")
+            await message_channel.send("No playable formats found for your query.")
+            return
 
     # Download the audio file to the cache directory
     filepath = await download_audio(url, cache_dir, title)
     if not filepath:
-        await message_channel.send("Failed to download audio. Please try again.")
+        await message_channel.send("Failed to download audio.")
         return
+    
+    if is_url:
+        duration = get_audio_duration(filepath)
+    else:
+        duration = info['entries'][0].get('duration', 0)
+        if duration == 0:
+            print("Warning: 'duration' key not found or is 0 in the first entry.")
+    
 
     # Check if the bot is already playing audio
     if voice_client.is_playing():
@@ -348,6 +403,20 @@ async def on_message(message):
                 await handle_resume_command(voice_client, channel)
             else:
                 await channel.send(f"{bot_name} is not connected to a voice channel.")
+        
+        # HELP
+        elif verb == "help":
+            help_message = (
+                "```"
+                f"Current valid commands for {bot_name}:\n"
+                f"!{settings.wake_phrase} play <YouTube URL or search term> - Play audio from YouTube.\n"
+                f"!{settings.wake_phrase} stop - Stop audio playback and disconnect.\n"
+                f"!{settings.wake_phrase} pause - Pause audio playback.\n"
+                f"!{settings.wake_phrase} resume - Resume audio playback.\n"
+                f"!{settings.wake_phrase} help - Show this help message."
+                "```"
+            )
+            await channel.send(help_message)
 
         else:
             await channel.send(f"Unknown command {verb}")
