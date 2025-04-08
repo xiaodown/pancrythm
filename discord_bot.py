@@ -285,7 +285,7 @@ async def play_song(voice_client, message_channel, song):
     await start_idle_timer(voice_client)  # Ensure the timer is initialized first
 
     # Add the song's duration to the idle timer
-    add_idle_time(voice_client.guild, song["duration"])
+    await add_idle_time(voice_client.guild, song["duration"])
 
     # Send a message to the text channel before playing
     await message_channel.send(f"Now playing: {song['title']}")
@@ -293,7 +293,7 @@ async def play_song(voice_client, message_channel, song):
     # Play the audio with volume control from the cached file
     volume = settings.volume
     ffmpeg_options = {
-        'options': f'-filter:a "volume={volume}"'
+        'options': f'-filter:a "volume={volume}" -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
     }
 
     audio_source = discord.FFmpegPCMAudio(
@@ -465,6 +465,7 @@ async def on_message(message):
             else:
                 # Connect to the voice channel
                 voice_client = await voice_channel.connect()
+                await asyncio.sleep(1) # Wait for the connection to stabilize
                 await handle_play_command(voice_client, args, message.channel)
 
         # STOP
