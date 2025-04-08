@@ -68,6 +68,7 @@ You can set the wake word in `settings.py` but by default it is `cake`.  So:
 
  * !cake play `<search term>`
    * searches for `<search term>` and plays the first result
+   * also accepts a YT url as the search term, which skips searching and plays directly
  * !cake stop
    * immediately stops playback and disconnects the bot from the voice channel
  * !cake pause
