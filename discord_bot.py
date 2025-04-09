@@ -52,6 +52,7 @@ def ensure_cache_dir_exists():
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir)
 
+@bot.event
 async def on_ready():
     custom_status = f"!{settings.wake_phrase} {settings.status}"
     await set_bot_custom_status(custom_status)
