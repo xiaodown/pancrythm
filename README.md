@@ -12,7 +12,8 @@ If you would like to also have a small music bot for your small discord server w
 
 ## Installation and Setup
 
-Works in linux.  To set it up:
+Works in linux.  Requires ffmpeg.  To set it up:
+ * Be on a linux box (or macos or unix or whatever) that has ffmpeg installed.
  * Clone the git repo: `git clone git@github.com:xiaodown/pancrythm.git`
  * Create a python virtual environment.
    * I use uv for this now: `cd pancrythm; uv venv`
