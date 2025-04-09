@@ -33,6 +33,18 @@ _idle_timer_locks = {}
 _guild_queues = {}
 _guild_locks = {}
 
+
+async def set_bot_custom_status(status_message):
+    """
+    Sets the bot's custom status as a plain string.
+
+    Parameters:
+        status_message (str): The custom status message to display.
+    """
+    activity = discord.Activity(type=discord.ActivityType.custom, name=status_message)
+    await bot.change_presence(activity=activity)
+    print(f"Bot custom status set to: {status_message}")
+
 def ensure_cache_dir_exists():
     """
     Ensure that the cache directory exists.
@@ -41,6 +53,8 @@ def ensure_cache_dir_exists():
         os.makedirs(cache_dir)
 
 async def on_ready():
+    custom_status = f"!{settings.wake_phrase} {settings.status}"
+    await set_bot_custom_status(custom_status)
     guild_count = 0
     for guild in bot.guilds:
         print(f"- {guild.id} (name: {guild.name})")
