@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta
 import re
 from mutagen import File as MutagenFile
+import threading
 
 # Discord bot setup and instantiation
 intents = discord.Intents.default()
@@ -292,6 +293,28 @@ def get_title_from_url(url):
             print(f"Error extracting title from URL: {e}")
             return None
 
+def play_audio_in_thread(voice_client, audio_source, message_channel):
+    """
+    Plays audio in a separate thread to avoid blocking the main event loop.
+    Cleans up the thread after playback ends.
+    """
+    def playback():
+        try:
+            # Play the audio
+            voice_client.play(
+                audio_source,
+                after=lambda e: asyncio.run_coroutine_threadsafe(
+                    handle_song_end(voice_client, message_channel),
+                    bot.loop
+                )
+            )
+        except Exception as e:
+            print(f"Error during playback: {e}")
+
+    # Start the playback in a new thread
+    playback_thread = threading.Thread(target=playback, daemon=True)
+    playback_thread.start()
+
 async def play_song(voice_client, message_channel, song):
     """
     Plays a song and handles the queue.
@@ -316,13 +339,7 @@ async def play_song(voice_client, message_channel, song):
         **ffmpeg_options
     )
 
-    voice_client.play(
-        audio_source,
-        after=lambda e: asyncio.run_coroutine_threadsafe(
-            handle_song_end(voice_client, message_channel),
-            bot.loop
-        )
-    )
+    play_audio_in_thread(voice_client, audio_source, message_channel)
 
 async def handle_song_end(voice_client, message_channel):
     """
