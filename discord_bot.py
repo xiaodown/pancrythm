@@ -1,3 +1,5 @@
+import signal
+import sys
 import asyncio
 import discord
 import settings
@@ -7,6 +9,8 @@ from datetime import datetime, timedelta
 import re
 from mutagen import File as MutagenFile
 import threading
+import psutil
+import json
 
 # Discord bot setup and instantiation
 intents = discord.Intents.default()
@@ -53,17 +57,111 @@ def ensure_cache_dir_exists():
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir)
 
+def terminate_ffmpeg_processes():
+    """
+    Terminates any lingering ffmpeg processes.
+    """
+    for process in psutil.process_iter(attrs=["name"]):
+        if process.info["name"] == "ffmpeg":
+            try:
+                process.terminate()
+                print(f"Terminated ffmpeg process with PID {process.pid}")
+            except Exception as e:
+                print(f"Failed to terminate ffmpeg process with PID {process.pid}: {e}")
+
+def save_bot_state():
+    """
+    Saves the bot's state (connected guilds and queues) to a file.
+    """
+    state = {
+        "guilds": [
+            {
+                "guild_id": guild_id,
+                "queue": _guild_queues[guild_id]
+            }
+            for guild_id in _guild_queues
+        ]
+    }
+    with open("bot_state.json", "w") as f:
+        json.dump(state, f)
+    print("Bot state saved.")
+
+def load_bot_state():
+    """
+    Loads the bot's state (connected guilds and queues) from a file.
+    """
+    terminate_ffmpeg_processes()
+    global _guild_queues
+    try:
+        with open("bot_state.json", "r") as f:
+            state = json.load(f)
+            for guild in state["guilds"]:
+                _guild_queues[guild["guild_id"]] = guild["queue"]
+        print("Bot state loaded.")
+    except FileNotFoundError:
+        print("No saved bot state found.")
+    except Exception as e:
+        print(f"Failed to load bot state: {e}")
+
 @bot.event
 async def on_ready():
     custom_status = f"!{settings.wake_phrase} {settings.status}"
     await set_bot_custom_status(custom_status)
     guild_count = 0
+
+    # Load the saved state
+    load_bot_state()
+
     for guild in bot.guilds:
         print(f"- {guild.id} (name: {guild.name})")
-        guild_count = guild_count + 1
+        guild_count += 1
 
-    print(f"{bot_name} is on " + str(guild_count) + " servers.")
+        # Reconnect to voice channels and resume playback
+        if guild.id in _guild_queues and _guild_queues[guild.id]:
+            try:
+                # Get the first voice channel in the guild
+                voice_channel = discord.utils.get(guild.voice_channels, members__contains=guild.me)
+                if voice_channel:
+                    voice_client = await voice_channel.connect()
+                    print(f"Reconnected to voice channel: {voice_channel.name}")
+                    
+                    # Resume playback if there are songs in the queue
+                    next_song = _guild_queues[guild.id].pop(0)
+                    await play_song(voice_client, guild.text_channels[0], next_song)
+            except Exception as e:
+                print(f"Failed to reconnect to voice channel in guild {guild.id}: {e}")
 
+    print(f"{bot_name} is on {guild_count} servers.")
+
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """
+    Detects when the bot disconnects from a voice channel and attempts to reconnect.
+    """
+    if member == bot.user:
+        # Check if the bot was in a voice channel and is now disconnected
+        if before.channel is not None and after.channel is None:
+            print(f"{bot_name} was disconnected from the voice channel: {before.channel.name}")
+            
+            # Save the bot state to ensure the queue is preserved
+            save_bot_state()
+            print(f"Saved queue state for guild {before.channel.guild.id}.")
+
+            # Attempt to reconnect if there are songs in the queue
+            guild_id = before.channel.guild.id
+            if guild_id in _guild_queues and _guild_queues[guild_id]:
+                try:
+                    # Reconnect to the same voice channel
+                    voice_channel = before.channel
+                    voice_client = await voice_channel.connect()
+                    print(f"Reconnected to voice channel: {voice_channel.name}")
+                    
+                    # Resume playback if there are songs in the queue
+                    next_song = _guild_queues[guild_id].pop(0)
+                    await play_song(voice_client, voice_channel.guild.text_channels[0], next_song)
+                except Exception as e:
+                    print(f"Failed to reconnect to voice channel in guild {guild_id}: {e}")
 
 async def start_idle_timer(voice_client, timeout=None):
     """
@@ -314,6 +412,7 @@ def play_audio_in_thread(voice_client, audio_source, message_channel):
     # Start the playback in a new thread
     playback_thread = threading.Thread(target=playback, daemon=True)
     playback_thread.start()
+    save_bot_state()
 
 async def play_song(voice_client, message_channel, song):
     """
@@ -438,6 +537,8 @@ async def handle_play_command(voice_client, query, message_channel):
             }
             _guild_queues[guild_id].append(song)
             print(f"Added to queue: {title}")
+
+            save_bot_state()
 
             # If the bot is not currently playing anything, start playback
             if not voice_client.is_playing() and len(_guild_queues[guild_id]) == 1:
@@ -581,6 +682,29 @@ async def on_message(message):
 
         else:
             await channel.send(f"Unknown command {verb}")
+
+# Signal handler for cleanup
+def handle_exit_signal(signal_received, _):
+    """
+    Handles exit signals (e.g., SIGINT, SIGTERM) and performs cleanup before exiting.
+    """
+    print(f"Signal {signal_received} received. Cleaning up before exiting...")
+
+    # Save the bot state
+    save_bot_state()
+
+    # Terminate lingering ffmpeg processes
+    terminate_ffmpeg_processes()
+
+    # Stop the bot gracefully
+    if bot.is_ready():
+        asyncio.run(bot.close())
+
+    print("Cleanup complete. Exiting.")
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, handle_exit_signal)
+signal.signal(signal.SIGTERM, handle_exit_signal)
 
 ensure_cache_dir_exists()
 bot.run(api_key)

@@ -8,6 +8,7 @@ __pycache__/
 discordapikey.txt
 ytapikey.txt
 cache/
+bot_state.json
 
 
 # C extensions
