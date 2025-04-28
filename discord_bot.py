@@ -364,7 +364,7 @@ async def handle_song_end(voice_client, message_channel):
 async def handle_play_command(voice_client, query, message_channel):
     """
     Plays the audio from the given query or URL in the voice channel.
-    If a song is already playing, adds the song to the queue.
+    If a song is already playing or the queue exists, adds the song to the queue.
     """
     guild_id = voice_client.guild.id
 
@@ -421,34 +421,29 @@ async def handle_play_command(voice_client, query, message_channel):
                 return
 
             # Extract duration
-            if is_url:
+            duration = info['entries'][0].get('duration', 600)
+            if (duration == 600) and is_url:
                 duration = get_audio_duration(filepath)
-            else:
-                duration = info['entries'][0].get('duration', 600)
 
             # Initialize the queue for the guild if it doesn't exist
             if guild_id not in _guild_queues:
                 _guild_queues[guild_id] = []
 
-            # Check if the bot is already playing audio
-            if voice_client.is_playing():
-                # Add the song to the queue
-                if len(_guild_queues[guild_id]) >= queue_limit:
-                    await message_channel.send("The queue is full. Please wait for some songs to finish before adding more.")
-                    return
-                _guild_queues[guild_id].append({"title": title, "url": url, "filepath": filepath, "duration": duration})
-                print(f"Added to queue: {title}")
-                await message_channel.send(f"Added to queue: {title}")
-                return
-
-            # Play the song immediately if no audio is playing
+            # Add the song to the queue
             song = {
-                "title": title, 
-                "url": url, 
-                "filepath": filepath, 
+                "title": title,
+                "url": url,
+                "filepath": filepath,
                 "duration": duration
-                }
-            await play_song(voice_client, message_channel, song)
+            }
+            _guild_queues[guild_id].append(song)
+            print(f"Added to queue: {title}")
+
+            # If the bot is not currently playing anything, start playback
+            if not voice_client.is_playing() and len(_guild_queues[guild_id]) == 1:
+                await play_song(voice_client, message_channel, song)
+            else:
+                await message_channel.send(f"Added to queue: {title}")
 
 def parse_message(message):
     """
