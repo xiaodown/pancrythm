@@ -712,7 +712,8 @@ def handle_exit_signal(signal_received, _):
 
     # Stop the bot gracefully
     if bot.is_ready():
-        asyncio.run(bot.close())
+        loop = asyncio.get_event_loop()
+        loop.create_task(bot.close())  # Schedule bot.close() on the existing event loop
 
     print("Cleanup complete. Exiting.")
     sys.exit(0)
