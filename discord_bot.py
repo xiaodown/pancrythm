@@ -528,23 +528,26 @@ async def handle_play_command(voice_client, query, message_channel):
             if guild_id not in _guild_queues:
                 _guild_queues[guild_id] = []
 
-            # Add the song to the queue
+            # Create the song dict
             song = {
                 "title": title,
                 "url": url,
                 "filepath": filepath,
                 "duration": duration
             }
-            _guild_queues[guild_id].append(song)
-            print(f"Added to queue: {title}")
 
-            save_bot_state()
-
-            # If the bot is not currently playing anything, start playback
-            if not voice_client.is_playing() and len(_guild_queues[guild_id]) == 1:
+            # If the bot is not currently playing anything, start playback immediately
+            if not voice_client.is_playing() and len(_guild_queues[guild_id]) == 0:
                 await play_song(voice_client, message_channel, song)
+                await message_channel.send(f"Now playing: {song['title']}")
             else:
+                # Add the song to the queue
+                _guild_queues[guild_id].append(song)
+                print(f"Added to queue: {title}")
                 await message_channel.send(f"Added to queue: {title}")
+
+            # Save the bot state
+            save_bot_state()
 
 def parse_message(message):
     """
