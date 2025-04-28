@@ -539,7 +539,6 @@ async def handle_play_command(voice_client, query, message_channel):
             # If the bot is not currently playing anything, start playback immediately
             if not voice_client.is_playing() and len(_guild_queues[guild_id]) == 0:
                 await play_song(voice_client, message_channel, song)
-                await message_channel.send(f"Now playing: {song['title']}")
             else:
                 # Add the song to the queue
                 _guild_queues[guild_id].append(song)
