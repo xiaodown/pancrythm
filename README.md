@@ -91,7 +91,8 @@ You can set the wake word in `settings.py` but by default it is `cake`.  So:
 
  * ~~Queueing system needs to be implemented~~ - Done, if not particularly elegant.  Should be race-condition safe(ish)
    * ~~Skipping / manipulating items in the queueing system~~ Done.
- * Make the idle timeout less crazy (it's been rewritten like 6 times so there's bits everywhere)
+ * ~~Make the idle timeout less crazy (it's been rewritten like 6 times so there's bits everywhere)~~
+   * Assuming the latest stab at finding duration works, this should be done.
  * ~~Create help text (!cake help or something)~~ Done
  * ~~support URLs as a search term~~ Done
  * Clean up code / make more object oriented (unlikely)
