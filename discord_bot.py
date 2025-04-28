@@ -660,14 +660,13 @@ async def on_message(message):
                     stop_playback(voice_client)
 
                     # Check if there is a next song in the queue
-                    if _guild_queues[guild_id]:
-                        # Play the next song in the queue
-                        next_song = _guild_queues[guild_id].pop(0)
+                    next_song = _guild_queues[guild_id].pop(0)  # Always pop the next song
+                    if _guild_queues[guild_id]:  # If there are more songs in the queue
                         await play_song(voice_client, channel, next_song)
                         await channel.send(f"Skipped to the next song: {next_song['title']}")
                     else:
                         # No more songs in the queue
-                        await channel.send("Skipped the current song. The queue is now empty.")
+                        await channel.send(f"Skipped the current song: {next_song['title']}. The queue is now empty.")
                 else:
                     await channel.send("The queue is empty. Nothing to skip.")
             else:
