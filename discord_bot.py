@@ -654,8 +654,22 @@ async def on_message(message):
         elif verb == "skip":
             voice_client = discord.utils.get(bot.voice_clients, guild=message.guild)
             if voice_client:
-                # Stopping playback will implicitly call the after callback
-                stop_playback(voice_client)
+                guild_id = voice_client.guild.id
+                if guild_id in _guild_queues and _guild_queues[guild_id]:
+                    # Stop the current playback
+                    stop_playback(voice_client)
+
+                    # Check if there is a next song in the queue
+                    if _guild_queues[guild_id]:
+                        # Play the next song in the queue
+                        next_song = _guild_queues[guild_id].pop(0)
+                        await play_song(voice_client, channel, next_song)
+                        await channel.send(f"Skipped to the next song: {next_song['title']}")
+                    else:
+                        # No more songs in the queue
+                        await channel.send("Skipped the current song. The queue is now empty.")
+                else:
+                    await channel.send("The queue is empty. Nothing to skip.")
             else:
                 await channel.send(f"{bot_name} is not connected to a voice channel.")
 
