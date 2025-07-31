@@ -38,6 +38,10 @@ _idle_timer_locks = {}
 _guild_queues = {}
 _guild_locks = {}
 
+# Add at the top with other globals
+_last_connection_attempt = {}
+_connection_failures = {}
+
 
 async def set_bot_custom_status(status_message):
     """
@@ -145,29 +149,62 @@ async def on_voice_state_update(member, before, after):
     if member == bot.user:
         # Check if the bot was in a voice channel and is now disconnected
         if before.channel is not None and after.channel is None:
-            print(f"{bot_name} was disconnected from the voice channel: {before.channel.name}")
+            guild_id = before.channel.guild.id
+            print(f"DEBUG: {bot_name} was disconnected from voice channel: {before.channel.name}")
+            print(f"DEBUG: Guild ID: {guild_id}")
+            print(f"DEBUG: Voice clients count: {len(bot.voice_clients)}")
             
             # Save the bot state to ensure the queue is preserved
             save_bot_state()
-            print(f"Saved queue state for guild {before.channel.guild.id}.")
+            print(f"Saved queue state for guild {guild_id}.")
+
+            # Track connection failures
+            if guild_id not in _connection_failures:
+                _connection_failures[guild_id] = 0
+            _connection_failures[guild_id] += 1
+            
+            print(f"DEBUG: Connection failure #{_connection_failures[guild_id]} for guild {guild_id}")
+
+            # Only attempt reconnect if we haven't failed too many times recently
+            if _connection_failures[guild_id] > 3:
+                print(f"DEBUG: Too many connection failures ({_connection_failures[guild_id]}), skipping reconnect")
+                return
 
             # Attempt to reconnect if there are songs in the queue
-            guild_id = before.channel.guild.id
             if guild_id in _guild_queues and _guild_queues[guild_id]:
+                # Add cooldown to prevent rapid reconnects
+                now = datetime.now()
+                last_attempt = _last_connection_attempt.get(guild_id, datetime.min)
+                if (now - last_attempt).total_seconds() < 30:
+                    print(f"DEBUG: Reconnect attempt throttled (last attempt {(now - last_attempt).total_seconds():.1f}s ago)")
+                    return
+                
+                _last_connection_attempt[guild_id] = now
+                
                 try:
-                    # Reconnect to the same voice channel
+                    print(f"DEBUG: Attempting to reconnect to voice channel: {before.channel.name}")
                     voice_channel = before.channel
+                    
+                    # Clean up any existing voice clients
                     existing_voice_client = discord.utils.get(bot.voice_clients, guild=voice_channel.guild)
-                    if existing_voice_client and existing_voice_client.is_connected():
+                    if existing_voice_client:
+                        print(f"DEBUG: Found existing voice client, disconnecting...")
                         await existing_voice_client.disconnect(force=True)
+                        await asyncio.sleep(2)  # Wait for cleanup
+                    
+                    print(f"DEBUG: Connecting to voice channel...")
                     voice_client = await voice_channel.connect()
-                    print(f"Reconnected to voice channel: {voice_channel.name}")
+                    print(f"DEBUG: Successfully reconnected to voice channel: {voice_channel.name}")
+                    
+                    # Reset failure counter on success
+                    _connection_failures[guild_id] = 0
                     
                     # Resume playback if there are songs in the queue
                     next_song = _guild_queues[guild_id].pop(0)
                     await play_song(voice_client, voice_channel.guild.text_channels[0], next_song)
                 except Exception as e:
-                    print(f"Failed to reconnect to voice channel in guild {guild_id}: {e}")
+                    print(f"DEBUG: Failed to reconnect to voice channel in guild {guild_id}: {e}")
+                    print(f"DEBUG: Exception type: {type(e).__name__}")
 
 async def start_idle_timer(voice_client, timeout=None):
     """
@@ -593,19 +630,43 @@ async def on_message(message):
                 await channel.send("You need to be in a voice channel to use this command.")
                 return
 
+            guild_id = message.guild.id
+            print(f"DEBUG: Play command for guild {guild_id}")
+            print(f"DEBUG: Voice channel: {voice_channel.name} (ID: {voice_channel.id})")
+            print(f"DEBUG: Current voice clients: {[vc.guild.id for vc in bot.voice_clients]}")
+
             # Check if the bot is already connected to a voice channel in the same guild
             existing_voice_client = discord.utils.get(bot.voice_clients, guild=message.guild)
             if existing_voice_client and existing_voice_client.is_connected():
-                print(f"Bot is already connected to a voice channel in guild {message.guild.id}.")
+                print(f"DEBUG: Bot is already connected to voice in guild {guild_id}")
                 await handle_play_command(existing_voice_client, args, message.channel)
             else:
+                print(f"DEBUG: Attempting to connect to voice channel...")
+                
+                # Clean up any stale voice clients
                 stale_voice_client = discord.utils.get(bot.voice_clients, guild=voice_channel.guild)
-                if stale_voice_client and stale_voice_client.is_connected():
+                if stale_voice_client:
+                    print(f"DEBUG: Found stale voice client, cleaning up...")
                     await stale_voice_client.disconnect(force=True)
-                # Connect to the voice channel
-                voice_client = await voice_channel.connect()
-                await asyncio.sleep(1) # Wait for the connection to stabilize
-                await handle_play_command(voice_client, args, message.channel)
+                    await asyncio.sleep(2)  # Wait for cleanup
+                
+                try:
+                    # Reset failure counter for new attempts
+                    _connection_failures[guild_id] = 0
+                    
+                    print(f"DEBUG: Connecting to voice channel {voice_channel.name}...")
+                    voice_client = await voice_channel.connect()
+                    print(f"DEBUG: Successfully connected to voice channel")
+                    await asyncio.sleep(1)  # Wait for connection to stabilize
+                    await handle_play_command(voice_client, args, message.channel)
+                except discord.errors.ConnectionClosed as e:
+                    print(f"DEBUG: Connection closed during connect: {e}")
+                    print(f"DEBUG: Close code: {e.code}")
+                    await channel.send(f"Failed to connect to voice channel (Discord error {e.code})")
+                except Exception as e:
+                    print(f"DEBUG: Unexpected error during voice connect: {e}")
+                    print(f"DEBUG: Exception type: {type(e).__name__}")
+                    await channel.send(f"Failed to connect to voice channel: {e}")
 
         # STOP
         elif verb == "stop":
