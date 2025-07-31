@@ -122,6 +122,9 @@ async def on_ready():
                 # Get the first voice channel in the guild
                 voice_channel = discord.utils.get(guild.voice_channels, members__contains=guild.me)
                 if voice_channel:
+                    existing_voice_client = discord.utils.get(bot.voice_clients, guild=guild)
+                    if existing_voice_client and existing_voice_client.is_connected():
+                        await existing_voice_client.disconnect(force=True)
                     voice_client = await voice_channel.connect()
                     print(f"Reconnected to voice channel: {voice_channel.name}")
                     
@@ -154,6 +157,9 @@ async def on_voice_state_update(member, before, after):
                 try:
                     # Reconnect to the same voice channel
                     voice_channel = before.channel
+                    existing_voice_client = discord.utils.get(bot.voice_clients, guild=voice_channel.guild)
+                    if existing_voice_client and existing_voice_client.is_connected():
+                        await existing_voice_client.disconnect(force=True)
                     voice_client = await voice_channel.connect()
                     print(f"Reconnected to voice channel: {voice_channel.name}")
                     
@@ -593,6 +599,9 @@ async def on_message(message):
                 print(f"Bot is already connected to a voice channel in guild {message.guild.id}.")
                 await handle_play_command(existing_voice_client, args, message.channel)
             else:
+                stale_voice_client = discord.utils.get(bot.voice_clients, guild=voice_channel.guild)
+                if stale_voice_client and stale_voice_client.is_connected():
+                    await stale_voice_client.disconnect(force=True)
                 # Connect to the voice channel
                 voice_client = await voice_channel.connect()
                 await asyncio.sleep(1) # Wait for the connection to stabilize
