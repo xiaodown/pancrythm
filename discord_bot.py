@@ -11,6 +11,7 @@ from mutagen import File as MutagenFile
 import threading
 import psutil
 import json
+import logging
 
 # Discord bot setup and instantiation
 intents = discord.Intents.default()
@@ -42,6 +43,15 @@ _guild_locks = {}
 _last_connection_attempt = {}
 _connection_failures = {}
 
+# Enable discord.py debug logging
+logging.basicConfig(level=logging.DEBUG)
+discord_logger = logging.getLogger('discord')
+discord_logger.setLevel(logging.DEBUG)
+
+# Add handler to see voice state logs
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+discord_logger.addHandler(handler)
 
 async def set_bot_custom_status(status_message):
     """
@@ -545,7 +555,7 @@ async def handle_play_command(voice_client, query, message_channel):
                 # Find the format with format_id == 234
                 url = None
                 for fmt in formats:
-                    if fmt.get('format_id') == '234':  # Match format_id as a string
+                    if fmt.get('format_id') == '234':
                         url = fmt.get('url')
                         break
                 title = info['entries'][0].get('title', "Unknown Title")
@@ -634,6 +644,18 @@ async def on_message(message):
             print(f"DEBUG: Play command for guild {guild_id}")
             print(f"DEBUG: Voice channel: {voice_channel.name} (ID: {voice_channel.id})")
             print(f"DEBUG: Current voice clients: {[vc.guild.id for vc in bot.voice_clients]}")
+            print(f"DEBUG: Bot permissions in voice channel: {voice_channel.permissions_for(message.guild.me)}")
+            print(f"DEBUG: Bot user ID: {bot.user.id}")
+            print(f"DEBUG: Guild member count: {message.guild.member_count}")
+            
+            # Check bot permissions
+            permissions = voice_channel.permissions_for(message.guild.me)
+            if not permissions.connect:
+                await channel.send("I don't have permission to connect to that voice channel.")
+                return
+            if not permissions.speak:
+                await channel.send("I don't have permission to speak in that voice channel.")
+                return
 
             # Check if the bot is already connected to a voice channel in the same guild
             existing_voice_client = discord.utils.get(bot.voice_clients, guild=message.guild)
@@ -648,24 +670,60 @@ async def on_message(message):
                 if stale_voice_client:
                     print(f"DEBUG: Found stale voice client, cleaning up...")
                     await stale_voice_client.disconnect(force=True)
-                    await asyncio.sleep(2)  # Wait for cleanup
+                    await asyncio.sleep(3)  # Longer wait for cleanup
+                
+                # Clear any existing failure tracking for fresh attempts
+                _connection_failures[guild_id] = 0
                 
                 try:
-                    # Reset failure counter for new attempts
-                    _connection_failures[guild_id] = 0
+                    print(f"DEBUG: About to call voice_channel.connect()...")
+                    print(f"DEBUG: Voice channel region: {getattr(voice_channel.guild, 'region', 'Unknown')}")
+                    print(f"DEBUG: Voice channel bitrate: {voice_channel.bitrate}")
+                    print(f"DEBUG: Voice channel user_limit: {voice_channel.user_limit}")
                     
-                    print(f"DEBUG: Connecting to voice channel {voice_channel.name}...")
-                    voice_client = await voice_channel.connect()
+                    # Try connecting with a timeout
+                    voice_client = await asyncio.wait_for(
+                        voice_channel.connect(timeout=30.0, reconnect=False),
+                        timeout=35.0
+                    )
+                    
                     print(f"DEBUG: Successfully connected to voice channel")
-                    await asyncio.sleep(1)  # Wait for connection to stabilize
+                    print(f"DEBUG: Voice client connected: {voice_client.is_connected()}")
+                    print(f"DEBUG: Voice client latency: {voice_client.latency}")
+                    
+                    await asyncio.sleep(2)  # Wait for connection to stabilize
                     await handle_play_command(voice_client, args, message.channel)
+                    
                 except discord.errors.ConnectionClosed as e:
                     print(f"DEBUG: Connection closed during connect: {e}")
                     print(f"DEBUG: Close code: {e.code}")
-                    await channel.send(f"Failed to connect to voice channel (Discord error {e.code})")
+                    print(f"DEBUG: Close reason lookup:")
+                    close_codes = {
+                        4001: "Unknown opcode",
+                        4002: "Failed to decode payload",
+                        4003: "Not authenticated",
+                        4004: "Authentication failed",
+                        4005: "Already authenticated", 
+                        4006: "Session no longer valid",
+                        4009: "Session timeout",
+                        4011: "Server not found",
+                        4012: "Unknown protocol",
+                        4014: "Disconnected",
+                        4015: "Voice server crashed",
+                        4016: "Unknown encryption mode"
+                    }
+                    reason = close_codes.get(e.code, "Unknown error code")
+                    print(f"DEBUG: Error {e.code}: {reason}")
+                    await channel.send(f"Voice connection failed: {reason} (Code {e.code})")
+                    
+                except asyncio.TimeoutError:
+                    print(f"DEBUG: Connection attempt timed out")
+                    await channel.send("Voice connection timed out")
+                    
                 except Exception as e:
                     print(f"DEBUG: Unexpected error during voice connect: {e}")
                     print(f"DEBUG: Exception type: {type(e).__name__}")
+                    print(f"DEBUG: Exception args: {e.args}")
                     await channel.send(f"Failed to connect to voice channel: {e}")
 
         # STOP
@@ -753,6 +811,20 @@ async def on_message(message):
                     await channel.send("Please provide a valid song number to remove.")
             else:
                 await channel.send("Please provide a valid song number to remove.")
+
+        # DEBUG
+        elif verb == "debug":
+            debug_info = (
+                f"**Bot Debug Info:**\n"
+                f"Connected to {len(bot.guilds)} guilds\n"
+                f"Voice clients: {len(bot.voice_clients)}\n"
+                f"Latency: {bot.latency * 1000:.1f}ms\n"
+                f"Python version: {sys.version}\n"
+                f"Discord.py version: {discord.__version__}\n"
+                f"Guild region: {getattr(message.guild, 'region', 'Unknown')}\n"
+                f"Bot permissions: {message.guild.me.guild_permissions.value}"
+            )
+            await channel.send(debug_info)
 
         else:
             await channel.send(f"Unknown command {verb}")
